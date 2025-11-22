@@ -37,19 +37,28 @@ app = FastAPI()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 MYSQL_HOST = os.getenv("MYSQL_HOST")
-MYSQL_PORT = int(os.getenv("MYSQL_PORT"))
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
 MYSQL_USER = os.getenv("MYSQL_USER")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
 MYSQL_DB = os.getenv("MYSQL_DB")
-RAG_INDEX_PATH = r"/mnt/c/Users/team42/projects_results/TEXT_TO_SQL/rag_index.json"
+RAG_INDEX_PATH = os.getenv("RAG_INDEX_PATH", "rag_index.json")
 GOOGLE_SHEETS_CREDENTIALS_PATH = os.getenv("GOOGLE_SHEETS_CREDENTIALS_PATH", "")
 GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "")
 GOOGLE_SHEETS_WORKSHEET_NAME = os.getenv("GOOGLE_SHEETS_WORKSHEET_NAME", "TABLE_SUMMARY")
 GOOGLE_SHEETS_FEEDBACK_WORKSHEET_NAME = os.getenv("GOOGLE_SHEETS_FEEDBACK_WORKSHEET_NAME", "FEEDBACK")
 GOOGLE_SHEETS_LOG_WORKSHEET_NAME = os.getenv("GOOGLE_SHEETS_LOG_WORKSHEET_NAME", "LOG")
 
-with open(RAG_INDEX_PATH, "r", encoding="utf-8") as f:
-    RAG_INDEX = json.load(f)
+# RAG Index 로드
+RAG_INDEX = []
+if os.path.exists(RAG_INDEX_PATH):
+    try:
+        with open(RAG_INDEX_PATH, "r", encoding="utf-8") as f:
+            RAG_INDEX = json.load(f)
+        logger.info(f"✅ RAG Index 로드 완료: {RAG_INDEX_PATH}")
+    except Exception as e:
+        logger.warning(f"⚠️ RAG Index 로드 실패: {e}")
+else:
+    logger.warning(f"⚠️ RAG Index 파일을 찾을 수 없습니다: {RAG_INDEX_PATH}")
 
 # 구글 시트 클라이언트 초기화 (선택적)
 google_sheets_client = None
@@ -94,7 +103,7 @@ if GOOGLE_SHEETS_CREDENTIALS_PATH and os.path.exists(GOOGLE_SHEETS_CREDENTIALS_P
                 )
                 # 헤더 추가
                 worksheet.append_row([
-                    "타임스탬프", "사용자명", "질문", "SQL", "결과", "피드백", "메시지ID", "사용자ID"
+                    "타임스탬프", "사용자명", "질문", "SQL", "결과", "피드백", "메시지ID", "사용자ID", "컨텍스트정보"
                 ])
                 logger.info(f"✅ LOG 워크시트 생성 완료: {GOOGLE_SHEETS_LOG_WORKSHEET_NAME}")
         except Exception as e:
@@ -136,8 +145,13 @@ def get_schema_from_google_sheets() -> str:
         spreadsheet = google_sheets_client.open_by_key(GOOGLE_SHEETS_SPREADSHEET_ID)
         worksheet = spreadsheet.worksheet(GOOGLE_SHEETS_WORKSHEET_NAME)
         
-        # 모든 데이터 가져오기
-        records = worksheet.get_all_records()
+        # 모든 데이터 가져오기 (헤더 중복 문제 해결)
+        try:
+            records = worksheet.get_all_records(expected_headers=["table_name", "columns", "description"])
+        except Exception as e:
+            # expected_headers가 실패하면 일반 방식으로 시도
+            logger.warning(f"⚠️ expected_headers로 가져오기 실패, 일반 방식으로 시도: {e}")
+            records = worksheet.get_all_records()
         
         schema_blocks = []
         for record in records:
@@ -277,13 +291,13 @@ async def slack_events(request: Request):
         logger.info("=" * 80)
         logger.info(f"🚀 새로운 쿼리 요청: {query_text}")
         
-        sql = generate_sql_with_gpt(query_text, use_full_schema=False)
+        sql, context_info = generate_sql_with_gpt(query_text, use_full_schema=False)
         result = execute_sql(sql)
         
         # 에러 발생 시 구글 시트에서 전체 스키마로 재시도
         if result.startswith("SQL 실행 오류") or result.startswith("오류 발생"):
             logger.warning(f"⚠️ 첫 번째 시도 실패. 구글 시트에서 전체 스키마로 재시도...")
-            sql = generate_sql_with_gpt(query_text, use_full_schema=True)
+            sql, context_info = generate_sql_with_gpt(query_text, use_full_schema=True)
             result = execute_sql(sql)
             
             if result.startswith("SQL 실행 오류") or result.startswith("오류 발생"):
@@ -472,7 +486,7 @@ def save_feedback_background(feedback_type: str, question: str, sql: str, result
 
 
 # ------------------- 구글 시트에 쿼리 로그 저장 -------------------
-def save_query_to_google_sheets(user_name: str, user_id: str, question: str, sql: str, result: str, message_id: str, feedback: str = ""):
+def save_query_to_google_sheets(user_name: str, user_id: str, question: str, sql: str, result: str, message_id: str, feedback: str = "", context_info: dict = None):
     """구글 시트 LOG 워크시트에 쿼리 실행 기록 저장 (FEEDBACK과 동일한 방식)"""
     if not google_sheets_client or not GOOGLE_SHEETS_SPREADSHEET_ID:
         return
@@ -484,6 +498,17 @@ def save_query_to_google_sheets(user_name: str, user_id: str, question: str, sql
             worksheet = spreadsheet.worksheet(GOOGLE_SHEETS_LOG_WORKSHEET_NAME)
             
             timestamp = datetime.now().isoformat()
+            
+            # 컨텍스트 정보 포맷팅 (로그용 - 모든 정보 포함)
+            context_log = ""
+            if context_info and context_info.get("tables"):
+                context_parts = []
+                for table_info in context_info["tables"]:
+                    table_name = table_info.get("table", "")
+                    columns = table_info.get("columns", "")
+                    context_parts.append(f"테이블: {table_name}, 컬럼: {columns}")
+                context_log = " | ".join(context_parts)
+            
             row = [
                 timestamp,
                 user_name,
@@ -492,10 +517,18 @@ def save_query_to_google_sheets(user_name: str, user_id: str, question: str, sql
                 result[:1000] if result else "",  # 결과는 최대 1000자
                 feedback,  # 피드백이 없으면 빈 문자열
                 message_id,
-                user_id
+                user_id,
+                context_log  # 컨텍스트 정보 (테이블과 컬럼)
             ]
             worksheet.append_row(row)
             logger.info(f"✅ 구글 시트 LOG에 쿼리 기록 저장 완료")
+            
+            # 로그에도 상세 정보 기록
+            if context_info and context_info.get("tables"):
+                logger.info(f"📚 로그에 저장된 컨텍스트 정보:")
+                for table_info in context_info["tables"]:
+                    logger.info(f"   - 테이블: {table_info.get('table', '')}")
+                    logger.info(f"     컬럼: {table_info.get('columns', '')}")
         except Exception as e:
             logger.error(f"❌ 구글 시트 LOG에 쿼리 기록 저장 실패: {e}")
 
@@ -584,11 +617,12 @@ async def process_query_async(text: str, response_url: str, user_name: str, user
     logger.info(f"🚀 쿼리 처리 시작 (사용자: {user_name}): {text}")
 
     # 1) GPT로 SQL 생성 (먼저 RAG 사용)
-    sql = generate_sql_with_gpt(text, use_full_schema=False)
+    sql, context_info = generate_sql_with_gpt(text, use_full_schema=False)
     
     # SQL 생성 후 즉시 메시지 전송 (진행 중 표시)
     message_id = f"{datetime.now().timestamp()}_{hash(text + sql)}"
-    initial_message = f"질문: {text}\n\n```sql\n{sql}\n```\n\n⏳ 쿼리 실행 중..."
+    tables_info = format_tables_info(context_info)
+    initial_message = f"질문: {text}\n\n```sql\n{sql}\n```\n\n{tables_info}\n\n⏳ 쿼리 실행 중..." if tables_info else f"질문: {text}\n\n```sql\n{sql}\n```\n\n⏳ 쿼리 실행 중..."
     
     initial_blocks = [
         {
@@ -784,7 +818,8 @@ async def process_query_async(text: str, response_url: str, user_name: str, user
         logger.warning(f"⚠️ 첫 번째 시도 실패. 구글 시트에서 전체 스키마로 재시도...")
         
         # 재시도 진행 상황 표시 (메시지 업데이트)
-        retry_message = f"질문: {text}\n\n```sql\n{sql}\n```\n\n⚠️ 첫 번째 시도 실패. 재시도 중... (구글 시트 스키마 사용)"
+        tables_info = format_tables_info(context_info)
+        retry_message = f"질문: {text}\n\n```sql\n{sql}\n```\n\n{tables_info}\n\n⚠️ 첫 번째 시도 실패. 재시도 중... (구글 시트 스키마 사용)" if tables_info else f"질문: {text}\n\n```sql\n{sql}\n```\n\n⚠️ 첫 번째 시도 실패. 재시도 중... (구글 시트 스키마 사용)"
         if query_id in running_queries:
             query_info = running_queries[query_id]
             if query_info.get("message_ts") and query_info.get("channel_id"):
@@ -801,18 +836,19 @@ async def process_query_async(text: str, response_url: str, user_name: str, user
                 except:
                     pass
         
-        sql = generate_sql_with_gpt(text, use_full_schema=True)
+        sql, context_info = generate_sql_with_gpt(text, use_full_schema=True)
         result = await asyncio.to_thread(execute_sql, sql)
         message_id = f"{datetime.now().timestamp()}_{hash(text + sql)}"  # 재시도 시 메시지 ID 재생성
         
         # 재시도 후에도 에러면 에러 메시지 포함해서 전송
+        tables_info = format_tables_info(context_info)
         if result.startswith("SQL 실행 오류") or result.startswith("오류 발생"):
-            error_message = f"질문: {text}\n\n```sql\n{sql}\n```\n\n결과:\n{result}\n\n⚠️ 오류 발생: {result}\n\n구글 시트의 스키마 정보를 확인해주세요."
+            error_message = f"질문: {text}\n\n```sql\n{sql}\n```\n\n{tables_info}\n\n결과:\n{result}\n\n⚠️ 오류 발생: {result}\n\n구글 시트의 스키마 정보를 확인해주세요." if tables_info else f"질문: {text}\n\n```sql\n{sql}\n```\n\n결과:\n{result}\n\n⚠️ 오류 발생: {result}\n\n구글 시트의 스키마 정보를 확인해주세요."
         else:
-            error_message = f"질문: {text}\n\n```sql\n{sql}\n```\n\n결과:\n{result}"
+            error_message = f"질문: {text}\n\n```sql\n{sql}\n```\n\n{tables_info}\n\n결과:\n{result}" if tables_info else f"질문: {text}\n\n```sql\n{sql}\n```\n\n결과:\n{result}"
         
         # 구글 시트에 로그 저장 (피드백 없음)
-        save_query_to_google_sheets(user_name, user_id, text, sql, result, message_id, feedback="")
+        save_query_to_google_sheets(user_name, user_id, text, sql, result, message_id, feedback="", context_info=context_info)
         
         # 피드백 버튼 포함 메시지
         blocks = [
@@ -882,7 +918,8 @@ async def process_query_async(text: str, response_url: str, user_name: str, user
         save_query_to_google_sheets(user_name, user_id, text, sql, result, message_id, feedback="")
         
         # 정상 실행 - 질문 포함
-        normal_message = f"질문: {text}\n\n```sql\n{sql}\n```\n\n결과:\n{result}"
+        tables_info = format_tables_info(context_info)
+        normal_message = f"질문: {text}\n\n```sql\n{sql}\n```\n\n{tables_info}\n\n결과:\n{result}" if tables_info else f"질문: {text}\n\n```sql\n{sql}\n```\n\n결과:\n{result}"
         blocks = [
             {
                 "type": "section",
@@ -1025,28 +1062,86 @@ async def slack_command(request: Request, background_tasks: BackgroundTasks):
     start_messages = ["체크해 봐야겠군.", "움직일 시간인가."]
     return PlainTextResponse(random.choice(start_messages))
 
+# ------------------- 헬퍼 함수: 테이블명 포맷팅 -------------------
+def format_tables_info(context_info: dict) -> str:
+    """컨텍스트 정보에서 테이블명만 추출하여 포맷팅"""
+    if not context_info or not context_info.get("tables"):
+        return ""
+    
+    tables = [table_info["table"] for table_info in context_info["tables"] if table_info.get("table")]
+    if not tables:
+        return ""
+    
+    return f"📊 사용된 테이블: {', '.join(tables)}"
+
 # ------------------- GPT SQL 생성 함수 -------------------
-def generate_sql_with_gpt(question: str, use_full_schema: bool = False) -> str:
+def generate_sql_with_gpt(question: str, use_full_schema: bool = False) -> tuple[str, dict]:
+    """
+    SQL을 생성하고 사용된 컨텍스트 정보를 반환
+    Returns: (sql, context_info)
+    context_info = {
+        "tables": [{"table": "TABLE_NAME", "columns": "col1, col2, ..."}],
+        "source": "rag" or "google_sheets"
+    }
+    """
+    context_info = {"tables": [], "source": ""}
+    
     # use_full_schema가 True면 구글 시트에서 전체 스키마 가져오기
     if use_full_schema:
         ctx_text = get_schema_from_google_sheets()
+        context_info["source"] = "google_sheets"
         if not ctx_text:
             logger.warning("⚠️ 구글 시트 실패, RAG로 폴백")
             # 구글 시트 실패 시 RAG로 폴백
             contexts = rag_retrieve(question, top_k=3)
+            context_info["source"] = "rag"
             ctx_blocks = []
             for c in contexts:
                 ctx_blocks.append(c["text"])
+                # 컨텍스트 정보 추출
+                table_name = c.get("table_name", "")
+                # text에서 columns 추출
+                text_lines = c["text"].split("\n")
+                columns = ""
+                for line in text_lines:
+                    if line.startswith("Columns:"):
+                        columns = line.replace("Columns:", "").strip()
+                        break
+                context_info["tables"].append({
+                    "table": table_name,
+                    "columns": columns
+                })
             ctx_text = "\n\n---\n\n".join(ctx_blocks)
     else:
         # 1) RAG로 관련 테이블 컨텍스트 가져오기
         contexts = rag_retrieve(question, top_k=3)
+        context_info["source"] = "rag"
 
         ctx_blocks = []
         for c in contexts:
             # build_rag_index.py 에서 text 필드로 넣어둔 그 텍스트
             ctx_blocks.append(c["text"])
+            # 컨텍스트 정보 추출
+            table_name = c.get("table_name", "")
+            # text에서 columns 추출
+            text_lines = c["text"].split("\n")
+            columns = ""
+            for line in text_lines:
+                if line.startswith("Columns:"):
+                    columns = line.replace("Columns:", "").strip()
+                    break
+            context_info["tables"].append({
+                "table": table_name,
+                "columns": columns
+            })
         ctx_text = "\n\n---\n\n".join(ctx_blocks)
+    
+    # 사용된 컨텍스트 로깅
+    if context_info["tables"]:
+        logger.info(f"📚 사용된 컨텍스트 ({context_info['source']}):")
+        for table_info in context_info["tables"]:
+            logger.info(f"   - 테이블: {table_info['table']}")
+            logger.info(f"     컬럼: {table_info['columns']}")
 
     prompt = f"""
 You are an expert MySQL assistant for the game Mafia42.
@@ -1084,7 +1179,7 @@ Write a single valid MySQL SELECT query. No comments, no markdown, no explanatio
     
     logger.info(f"✅ 생성된 SQL: {sql}")
 
-    return sql
+    return sql, context_info
 
 
 # ------------------- MySQL 실행 함수 -------------------
@@ -1097,7 +1192,10 @@ def execute_sql(sql: str):
             user=MYSQL_USER,
             password=MYSQL_PASSWORD,
             database=MYSQL_DB,
-            cursorclass=pymysql.cursors.DictCursor
+            cursorclass=pymysql.cursors.DictCursor,
+            connect_timeout=10,
+            read_timeout=30,
+            write_timeout=30
         )
 
         with conn:
