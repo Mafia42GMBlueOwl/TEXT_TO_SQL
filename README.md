@@ -98,6 +98,16 @@ uvicorn FASTAPI:app --reload
 /sql 유저 수 세줘
 ```
 
+### 터미널 RAG 챗봇 사용 (SQL 실행 없음)
+
+로컬에서 SQL을 실행하지 않고 쿼리만 작성하려면 CLI 챗봇을 실행하세요.
+
+```bash
+python cli_chatbot.py --rag-index rag_index.json
+```
+
+`exit` 또는 `quit`을 입력해 종료할 수 있으며, `OPENAI_MODEL_CHAT` 환경 변수를 설정해 보다 고품질의 모델을 사용할 수 있습니다.
+
 ## 파일 구조
 
 ```
