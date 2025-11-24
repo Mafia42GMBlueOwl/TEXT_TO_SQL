@@ -520,7 +520,13 @@ def save_query_to_google_sheets(user_name: str, user_id: str, question: str, sql
                 user_id,
                 context_log  # 컨텍스트 정보 (테이블과 컬럼)
             ]
-            worksheet.append_row(row)
+            # 테이블 시작 위치를 고정해 행이 계단식으로 밀리는 문제 방지
+            worksheet.append_rows(
+                [row],
+                value_input_option="USER_ENTERED",
+                insert_data_option="INSERT_ROWS",
+                table_range="A1:I1"
+            )
             logger.info(f"✅ 구글 시트 LOG에 쿼리 기록 저장 완료")
             
             # 로그에도 상세 정보 기록
