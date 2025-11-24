@@ -108,6 +108,25 @@ python cli_chatbot.py --rag-index rag_index.json
 
 `exit` 또는 `quit`을 입력해 종료할 수 있으며, `OPENAI_MODEL_CHAT` 환경 변수를 설정해 보다 고품질의 모델을 사용할 수 있습니다.
 
+### 로컬(LM Studio/Ollama) RAG 챗봇 사용 (SQL 실행 없음)
+
+네트워크를 쓰지 않고 로컬 LLM 서버로만 SQL을 생성하려면 Ollama 호환 엔드포인트를 사용하는 CLI를 실행하세요.
+
+```bash
+# 예: Ollama가 localhost:11434에서 실행 중일 때
+python cli_local_chatbot.py --rag-index rag_index.json
+```
+
+환경 변수로 대상 모델과 엔드포인트를 설정할 수 있습니다.
+
+```env
+RAG_INDEX_PATH=rag_index.json
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_EMBED_MODEL=nomic-embed-text
+OLLAMA_CHAT_MODEL=llama3
+OLLAMA_TIMEOUT=60
+```
+
 ## 파일 구조
 
 ```
@@ -116,6 +135,8 @@ python cli_chatbot.py --rag-index rag_index.json
 ├── build_rag_index.py      # RAG 인덱스 생성 스크립트
 ├── Data_Process.py         # 데이터 처리 유틸리티
 ├── resize_icon.py         # Slack 아이콘 리사이즈 유틸리티
+├── cli_chatbot.py          # OpenAI API를 사용하는 RAG CLI 챗봇 (SQL 실행 없음)
+├── cli_local_chatbot.py    # Ollama 로컬 모델을 사용하는 RAG CLI 챗봇 (SQL 실행 없음)
 ├── requirements.txt        # Python 의존성
 └── README.md              # 이 파일
 ```
