@@ -108,6 +108,24 @@ python cli_chatbot.py --rag-index rag_index.json
 
 `exit` 또는 `quit`을 입력해 종료할 수 있으며, `OPENAI_MODEL_CHAT` 환경 변수를 설정해 보다 고품질의 모델을 사용할 수 있습니다.
 
+### 로컬 CLI(RAG, SQL 실행 없음) - OpenAI GPT-4
+
+터미널에서만 동작하며, OpenAI GPT-4 계열 모델로 쿼리만 작성하는 CLI입니다.
+
+```bash
+python cli_local_chatbot.py --rag-index rag_index.json
+```
+
+필요한 환경 변수 예시는 다음과 같습니다.
+
+```env
+RAG_INDEX_PATH=rag_index.json
+OPENAI_API_KEY=sk-...
+OPENAI_CHAT_MODEL=gpt-4o          # 원하는 GPT-4 계열 모델명
+OPENAI_EMBED_MODEL=text-embedding-3-small
+OPENAI_TIMEOUT=60
+```
+
 ## 파일 구조
 
 ```
@@ -116,6 +134,8 @@ python cli_chatbot.py --rag-index rag_index.json
 ├── build_rag_index.py      # RAG 인덱스 생성 스크립트
 ├── Data_Process.py         # 데이터 처리 유틸리티
 ├── resize_icon.py         # Slack 아이콘 리사이즈 유틸리티
+├── cli_chatbot.py          # OpenAI API를 사용하는 RAG CLI 챗봇 (SQL 실행 없음)
+├── cli_local_chatbot.py    # OpenAI GPT-4 기반 로컬 CLI (SQL 실행 없음)
 ├── requirements.txt        # Python 의존성
 └── README.md              # 이 파일
 ```
